@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import json
@@ -78,6 +79,8 @@ parser.add_argument('--stage', type=int, required=True, choices=[1, 2, 3, 4, 5])
 parser.add_argument('--base_model', type=str, default=None)
 parser.add_argument('--output_model', type=str, default=None)
 parser.add_argument('--max_steps', type=int, default=None)
+parser.add_argument('--resume', type=str, default=None, help='从指定的 checkpoint 目录恢复训练')
+parser.add_argument('--save_steps', type=int, default=25, help='每多少步保存一次检查点')
 args = parser.parse_args()
 
 STAGE_CONFIG = {
@@ -116,6 +119,7 @@ output_model_path = args.output_model if args.output_model else config["output_m
 print(f"阶段 {args.stage}: {config['name']}")
 print(f"基础模型: {base_model_path}")
 print(f"输出模型: {output_model_path}")
+print(f"恢复检查点: {args.resume if args.resume else '无'}")
 
 # ========== Stage 5 合并模式 ==========
 if args.stage == 5:
@@ -147,7 +151,6 @@ if args.stage == 5:
     sys.exit(0)
 
 # ========== Stage 1-4 训练模式 ==========
-# 确定数据集名称
 STAGE_DATASET = {
     1: "msagent",
     2: "sharegpt",
@@ -262,6 +265,7 @@ else:
 print(f"总样本数: {TOTAL_SAMPLES}")
 print(f"有效批次大小: {EFFECTIVE_BATCH}")
 print(f"max_steps = {max_steps}")
+print(f"保存检查点步数间隔: {args.save_steps}")
 
 training_args = TrainingArguments(
     output_dir="./tmp_train",
@@ -271,8 +275,8 @@ training_args = TrainingArguments(
     warmup_steps=100,
     max_steps=max_steps,
     logging_steps=200,
-    save_steps=500,
-    save_total_limit=2,
+    save_steps=args.save_steps,
+    save_total_limit=3,
     bf16=True,
     use_cpu=True,
     report_to="none",
@@ -290,7 +294,7 @@ trainer = Trainer(
 )
 
 print("开始训练...")
-trainer.train()
+trainer.train(resume_from_checkpoint=args.resume)
 
 print(f"保存模型到 {output_model_path}")
 os.makedirs(output_model_path, exist_ok=True)

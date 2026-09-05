@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -25,12 +28,29 @@ jobs:
       - name: Download base model
         run: python download_model.py
 
-      - name: Merge LoRA to full model and shard
-        run: python train.py --stage 5 --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder --output_model checkpoints/TeaX-Agent-Flash
+      - name: Find latest checkpoint
+        id: find_checkpoint
+        run: |
+          CHECKPOINT_DIR="checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder"
+          if [ -d "$CHECKPOINT_DIR" ] && [ "$(ls -A $CHECKPOINT_DIR 2>/dev/null)" ]; then
+            echo "resume_arg=--resume $CHECKPOINT_DIR" >> $GITHUB_OUTPUT
+            echo "Found checkpoint in $CHECKPOINT_DIR, will resume"
+          else
+            echo "resume_arg=" >> $GITHUB_OUTPUT
+            echo "No checkpoint found, starting from scratch"
+          fi
 
-      - name: Upload sharded final model
+      - name: Merge LoRA to full model and shard
+        run: |
+          python train.py \
+            --stage 5 \
+            --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder \
+            --output_model checkpoints/TeaX-Agent-Flash \
+            ${{ steps.find_checkpoint.outputs.resume_arg }}
+
+      - name: Push final model to branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add checkpoints/TeaX-Agent-Flash/
-          git commit -m "Stage 5: Final sharded model" && git push || echo "No changes"
+          git commit -m "Stage 5: Final sharded model" && git push origin HEAD:${{ github.ref_name }} || echo "No changes to commit"
