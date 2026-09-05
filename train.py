@@ -125,7 +125,6 @@ print(f"基础模型: {base_model_path}")
 print(f"输出模型: {output_model_path}")
 print(f"恢复检查点: {args.resume if args.resume else '无'}")
 
-# ==================== Stage 5 合并 ====================
 if args.stage == 5:
     print("合并模式：将 LoRA 适配器合并到基础模型，并分片保存")
     if base_model_path == "previous_model":
@@ -154,7 +153,6 @@ if args.stage == 5:
     print("合并完成，分片保存成功！")
     sys.exit(0)
 
-# ==================== Stage 1-4 训练 ====================
 STAGE_DATASET = {
     1: "msagent",
     2: "sharegpt",
@@ -275,9 +273,9 @@ def push_checkpoints(step):
         status = subprocess.check_output(['git', 'status', '--porcelain', 'checkpoints/']).decode()
         if not status:
             return True, None, time.time() - start_time, branch
-        subprocess.check_call(['git', 'add', 'checkpoints/'])
-        subprocess.check_call(['git', 'commit', '-m', f'Checkpoint update at step {step}'])
-        subprocess.check_call(['git', 'push', 'origin', f'HEAD:{branch}'])
+        subprocess.check_call(['git', 'add', 'checkpoints/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(['git', 'commit', '-m', f'Checkpoint update at step {step}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(['git', 'push', 'origin', f'HEAD:{branch}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError as e:
         return False, str(e), time.time() - start_time, branch
 
@@ -288,6 +286,7 @@ class PushCheckpointCallback(TrainerCallback):
         if state.global_step == 0:
             return
         success, err, elapsed, branch = push_checkpoints(state.global_step)
+        print()
         print(f"Task: Save_CheckPoint")
         print(f">>>steps:{state.global_step}")
         print(f">>>path:{args.output_dir}")
@@ -324,6 +323,7 @@ training_args = TrainingArguments(
     warmup_steps=100,
     max_steps=max_steps,
     logging_steps=1,
+    logging_first_step=True,
     save_steps=args.save_steps,
     save_total_limit=3,
     bf16=True,
@@ -333,6 +333,7 @@ training_args = TrainingArguments(
     dataloader_num_workers=0,
     remove_unused_columns=False,
     eval_strategy="no",
+    disable_tqdm=False,
 )
 
 trainer = Trainer(
@@ -344,7 +345,8 @@ trainer = Trainer(
 
 trainer.add_callback(PushCheckpointCallback())
 
-print("开始训练...")
+print("开始训练...", flush=True)
+sys.stdout.flush()
 trainer.train(resume_from_checkpoint=args.resume)
 
 print(f"训练完成，保存最终模型到 {output_model_path}")
@@ -354,6 +356,7 @@ tokenizer.save_pretrained(output_model_path)
 final_step = trainer.state.global_step
 success, err, elapsed, branch = push_checkpoints(final_step)
 
+print()
 print(f"Task: Save_CheckPoint")
 print(f">>>steps:{final_step}")
 print(f">>>path:{output_model_path}")
