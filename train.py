@@ -4,14 +4,18 @@ import sys
 import json
 import argparse
 import glob
+import subprocess
+import time
 from pathlib import Path
+
 import torch
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
     Trainer,
-    DataCollatorForSeq2Seq
+    DataCollatorForSeq2Seq,
+    TrainerCallback,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 from datasets import load_dataset
@@ -79,8 +83,8 @@ parser.add_argument('--stage', type=int, required=True, choices=[1, 2, 3, 4, 5])
 parser.add_argument('--base_model', type=str, default=None)
 parser.add_argument('--output_model', type=str, default=None)
 parser.add_argument('--max_steps', type=int, default=None)
-parser.add_argument('--resume', type=str, default=None, help='从指定的 checkpoint 目录恢复训练')
-parser.add_argument('--save_steps', type=int, default=25, help='每多少步保存一次检查点')
+parser.add_argument('--resume', type=str, default=None)
+parser.add_argument('--save_steps', type=int, default=25)
 args = parser.parse_args()
 
 STAGE_CONFIG = {
@@ -121,7 +125,7 @@ print(f"基础模型: {base_model_path}")
 print(f"输出模型: {output_model_path}")
 print(f"恢复检查点: {args.resume if args.resume else '无'}")
 
-# ========== Stage 5 合并模式 ==========
+# ==================== Stage 5 合并 ====================
 if args.stage == 5:
     print("合并模式：将 LoRA 适配器合并到基础模型，并分片保存")
     if base_model_path == "previous_model":
@@ -150,7 +154,7 @@ if args.stage == 5:
     print("合并完成，分片保存成功！")
     sys.exit(0)
 
-# ========== Stage 1-4 训练模式 ==========
+# ==================== Stage 1-4 训练 ====================
 STAGE_DATASET = {
     1: "msagent",
     2: "sharegpt",
@@ -160,14 +164,13 @@ STAGE_DATASET = {
 dataset_name = STAGE_DATASET[args.stage]
 meta_file = f"data/{dataset_name}.meta"
 if not Path(meta_file).exists():
-    print(f"错误: meta 文件 {meta_file} 不存在，请先运行 trans.py")
+    print(f"错误: meta 文件 {meta_file} 不存在")
     sys.exit(-1)
 
 with open(meta_file, "r") as f:
     meta = json.load(f)
 TOTAL_SAMPLES = meta["total_samples"]
 
-# 合并分片为单个 .jsonl 文件（如果尚未合并）
 merged_file = f"data/{dataset_name}.jsonl"
 if not Path(merged_file).exists():
     print(f"合并 {dataset_name} 的分片...")
@@ -183,7 +186,6 @@ if not Path(merged_file).exists():
 
 print(f"加载数据集: {merged_file}")
 
-# ========== 加载模型（可能来自上一阶段） ==========
 if base_model_path == "previous_model":
     prev_stage = args.stage - 1
     prev_output = STAGE_CONFIG[prev_stage]["output_model"]
@@ -223,7 +225,6 @@ else:
 
 model.print_trainable_parameters()
 
-# ========== 加载数据集（流式） ==========
 dataset = load_dataset("json", data_files=merged_file, split="train", streaming=True)
 
 def tokenize_fn(ex):
@@ -256,25 +257,73 @@ def custom_collator(batch):
         "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
     }
 
-# ========== 训练参数 ==========
-EFFECTIVE_BATCH = 1 * 4  # per_device * grad_accum
+def push_checkpoints(step):
+    start_time = time.time()
+    branch = os.environ.get('GITHUB_REF_NAME')
+    if not branch:
+        try:
+            branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode().strip()
+        except Exception:
+            branch = 'unknown'
+    remote_url = ''
+    try:
+        remote_url = subprocess.check_output(['git', 'remote', 'get-url', 'origin']).decode().strip()
+    except Exception:
+        remote_url = 'unknown'
+
+    try:
+        status = subprocess.check_output(['git', 'status', '--porcelain', 'checkpoints/']).decode()
+        if not status:
+            return True, None, time.time() - start_time, branch
+        subprocess.check_call(['git', 'add', 'checkpoints/'])
+        subprocess.check_call(['git', 'commit', '-m', f'Checkpoint update at step {step}'])
+        subprocess.check_call(['git', 'push', 'origin', f'HEAD:{branch}'])
+    except subprocess.CalledProcessError as e:
+        return False, str(e), time.time() - start_time, branch
+
+    return True, None, time.time() - start_time, branch
+
+class PushCheckpointCallback(TrainerCallback):
+    def on_save(self, args, state, control, model=None, tokenizer=None, **kwargs):
+        if state.global_step == 0:
+            return
+        success, err, elapsed, branch = push_checkpoints(state.global_step)
+        print(f"Task: Save_CheckPoint")
+        print(f">>>steps:{state.global_step}")
+        print(f">>>path:{args.output_dir}")
+        try:
+            remote = subprocess.check_output(['git', 'remote', 'get-url', 'origin']).decode().strip()
+        except Exception:
+            remote = 'unknown'
+        print(f">>>SubTask: push CheckPoints")
+        print(f">>>address:{remote}")
+        print(f">>>time:{elapsed:.2f}s")
+        print(f">>>branch:{branch}")
+        print(f">>>error:{err if err else 'Null'}")
+        if not success:
+            print("Push failed, exiting training.")
+            sys.exit(1)
+
+EFFECTIVE_BATCH = 1 * 4
 if args.max_steps:
     max_steps = args.max_steps
 else:
     max_steps = TOTAL_SAMPLES // EFFECTIVE_BATCH
+
 print(f"总样本数: {TOTAL_SAMPLES}")
 print(f"有效批次大小: {EFFECTIVE_BATCH}")
 print(f"max_steps = {max_steps}")
 print(f"保存检查点步数间隔: {args.save_steps}")
+print(f"日志打印步数间隔: 1 (每步打印)")
 
 training_args = TrainingArguments(
-    output_dir="./tmp_train",
+    output_dir=output_model_path,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=4,
     learning_rate=2e-4,
     warmup_steps=100,
     max_steps=max_steps,
-    logging_steps=200,
+    logging_steps=1,
     save_steps=args.save_steps,
     save_total_limit=3,
     bf16=True,
@@ -293,11 +342,33 @@ trainer = Trainer(
     data_collator=custom_collator,
 )
 
+trainer.add_callback(PushCheckpointCallback())
+
 print("开始训练...")
 trainer.train(resume_from_checkpoint=args.resume)
 
-print(f"保存模型到 {output_model_path}")
-os.makedirs(output_model_path, exist_ok=True)
+print(f"训练完成，保存最终模型到 {output_model_path}")
 model.save_pretrained(output_model_path)
 tokenizer.save_pretrained(output_model_path)
-print("训练完成！")
+
+final_step = trainer.state.global_step
+success, err, elapsed, branch = push_checkpoints(final_step)
+
+print(f"Task: Save_CheckPoint")
+print(f">>>steps:{final_step}")
+print(f">>>path:{output_model_path}")
+try:
+    remote = subprocess.check_output(['git', 'remote', 'get-url', 'origin']).decode().strip()
+except Exception:
+    remote = 'unknown'
+print(f">>>SubTask: push CheckPoints")
+print(f">>>address:{remote}")
+print(f">>>time:{elapsed:.2f}s")
+print(f">>>branch:{branch}")
+print(f">>>error:{err if err else 'Null'}")
+
+if not success:
+    print("Final push failed, exiting.")
+    sys.exit(1)
+
+print("全部完成！")
