@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import sys
 import json
@@ -19,7 +18,6 @@ from datasets import load_dataset, concatenate_datasets
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ["WANDB_DISABLED"] = "true"
 
-# ==================== 系统提示词 ====================
 SYSTEM_PROMPT = """You are TeaX Agent Flash, a capable AI assistant engineered for developer productivity. Your expertise spans code generation, debugging, tool orchestration, and technical Q&A.
 
 You operate with precision and clarity. You do not guess. You do not improvise when uncertain. You ask.
@@ -163,80 +161,57 @@ if args.stage == 5:
 
 def fmt_msagent(sample, tokenizer):
     convs = sample.get("conversations", [])
-    if not convs:
-        return None
+    if not convs: return None
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for t in convs:
         role = t.get("from", "")
         content = t.get("value", "")
-        if role == "system":
-            continue
-        if role == "user":
-            messages.append({"role": "user", "content": content})
-        elif role == "assistant":
-            messages.append({"role": "assistant", "content": content})
-        else:
-            continue
-    if len(messages) <= 1:
-        return None
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        if role == "system": continue
+        if role == "user": messages.append({"role": "user", "content": content})
+        elif role == "assistant": messages.append({"role": "assistant", "content": content})
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
 
 def fmt_sharegpt(sample, tokenizer):
     convs = sample.get("conversations", [])
-    if not convs:
-        return None
+    if not convs: return None
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for t in convs:
         role = t.get("from", "")
         content = t.get("value", "")
-        if role == "human":
-            messages.append({"role": "user", "content": content})
-        elif role == "gpt":
-            messages.append({"role": "assistant", "content": content})
-        else:
-            continue
-    if len(messages) <= 1:
-        return None
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        if role == "human": messages.append({"role": "user", "content": content})
+        elif role == "gpt": messages.append({"role": "assistant", "content": content})
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
 
 def fmt_deepseek_hermes(sample, tokenizer):
-    convs = sample.get("conversations", [])
-    if not convs:
-        convs = sample.get("messages", [])
-    if not convs:
-        return None
+    convs = sample.get("conversations", []) or sample.get("messages", [])
+    if not convs: return None
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for t in convs:
         role = t.get("role", "")
         content = t.get("content", "")
-        if role == "system":
-            continue
-        if role in ("user", "assistant"):
-            messages.append({"role": role, "content": content})
-        else:
-            continue
-    if len(messages) <= 1:
-        return None
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        if role == "system": continue
+        if role in ("user", "assistant"): messages.append({"role": role, "content": content})
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
 
 def fmt_nextcoder(sample, tokenizer):
     input_msgs = sample.get("input", [])
     response = sample.get("response", "")
-    if not input_msgs or not response:
-        return None
-    user_content = None
-    for m in input_msgs:
-        if m.get("role") == "user":
-            user_content = m.get("content")
-            break
-    if not user_content:
-        return None
+    if not input_msgs or not response: return None
+    user_content = next((m.get("content") for m in input_msgs if m.get("role") == "user"), None)
+    if not user_content: return None
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": response}
     ]
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
+STAGE_DATASET = {
+    1: "msagent",
+    2: "sharegpt",
+    3: "deepseek-hermes",
+    4: "nextcoder",
+}
 
 if base_model_path == "previous_model":
     prev_stage = args.stage - 1
@@ -278,58 +253,43 @@ else:
 model.print_trainable_parameters()
 
 def get_fmt_fn(stage):
-    if stage == 1:
-        return fmt_msagent
-    elif stage == 2:
-        return fmt_sharegpt
-    elif stage == 3:
-        return fmt_deepseek_hermes
-    elif stage == 4:
-        return fmt_nextcoder
-    else:
-        raise ValueError("无效 stage")
+    if stage == 1: return fmt_msagent
+    elif stage == 2: return fmt_sharegpt
+    elif stage == 3: return fmt_deepseek_hermes
+    elif stage == 4: return fmt_nextcoder
+    else: raise ValueError("无效 stage")
 
 fmt_fn = get_fmt_fn(args.stage)
 
-all_datasets = []
-for pattern in config["dataset_paths"]:
-    files = glob.glob(pattern)
-    if not files:
-        print(f"警告: 未找到匹配 {pattern} 的文件")
-        continue
-    for f in files:
-        if not Path(f).exists():
-            continue
-        ext = Path(f).suffix[1:]
-        print(f"加载 {f}")
-        try:
-            if ext in ("jsonl", "json"):
-                ds = load_dataset("json", data_files=f, split="train", streaming=True)
-            elif ext == "parquet":
-                ds = load_dataset("parquet", data_files=f, split="train", streaming=True)
-            else:
-                print(f"未知格式: {ext}，跳过")
-                continue
-            all_datasets.append(ds)
-        except Exception as e:
-            print(f"加载 {f} 失败: {e}")
-            continue
-
-if not all_datasets:
-    print("错误: 没有加载到任何数据")
+dataset_name = STAGE_DATASET[args.stage]
+meta_file = f"data/{dataset_name}.meta"
+if not Path(meta_file).exists():
+    print(f"错误: meta 文件 {meta_file} 不存在，请先运行 trans.py")
     sys.exit(-1)
 
-if len(all_datasets) > 1:
-    dataset = concatenate_datasets(all_datasets)
-else:
-    dataset = all_datasets[0]
+with open(meta_file, "r") as f:
+    meta = json.load(f)
+TOTAL_SAMPLES = meta["total_samples"]
 
-print("数据集加载完成")
+merged_file = f"data/{dataset_name}.jsonl"
+if not Path(merged_file).exists():
+    print(f"合并 {dataset_name} 的分片...")
+    chunk_files = sorted(glob.glob(f"data/{dataset_name}_*.jsonl"))
+    if not chunk_files:
+        print(f"错误: 找不到 {dataset_name} 的任何分片")
+        sys.exit(-1)
+    with open(merged_file, "w", encoding="utf-8") as out_f:
+        for cf in chunk_files:
+            with open(cf, "r", encoding="utf-8") as in_f:
+                out_f.write(in_f.read())
+    print(f"合并完成: {merged_file}")
+
+print(f"加载数据集: {merged_file}")
+dataset = load_dataset("json", data_files=merged_file, split="train", streaming=True)
 
 def tokenize_fn(ex):
-    text = fmt_fn(ex, tokenizer)
-    if not text:
-        return None
+    text = ex.get("text", "")
+    if not text: return None
     enc = tokenizer(text, truncation=True, max_length=2048, padding=False)
     return {
         "input_ids": enc["input_ids"],
