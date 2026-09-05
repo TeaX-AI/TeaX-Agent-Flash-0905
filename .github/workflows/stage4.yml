@@ -1,0 +1,41 @@
+name: Stage 4 - NextCoder
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install torch transformers peft accelerate datasets huggingface_hub
+
+      - name: Download base model and datasets (if not cached)
+        run: python download-all.py
+
+      - name: Run training Stage 4
+        run: |
+          python train.py \
+            --stage 4 \
+            --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes \
+            --output_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder
+          git commit -m "Stage 4: NextCoder checkpoint" && git push || echo "No changes to commit"
