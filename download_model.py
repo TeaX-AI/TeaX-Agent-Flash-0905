@@ -8,9 +8,6 @@ import sys
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# 设置国内镜像源（可选）
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-
 MODEL_NAME = "Qwen/Qwen2.5-1.5B"
 CACHE_DIR = ".cache/model"
 
