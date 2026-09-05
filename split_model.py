@@ -32,6 +32,7 @@ def split_file(file_path, output_dir, chunk_size=CHUNK_SIZE):
             parts.append(part_name)
             part_num += 1
 
+    # 保存分片信息（用于合并时验证）
     index = {
         "original_file": file_path.name,
         "original_size": file_size,
@@ -90,22 +91,26 @@ def merge_model(split_dir, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 读取总体索引
     index_path = split_dir / "model_index.json"
     if not index_path.exists():
-        print("错误: 找不到 model_index.json")
+        print("错误: 找不到 model_index.json，请确认目录是否正确")
         sys.exit(-1)
 
     with open(index_path) as f:
         total_index = json.load(f)
 
+    # 先处理大文件（有分片的）
     for orig_path, parts in total_index["files"].items():
         orig_path = Path(orig_path)
         target_path = output_dir / orig_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         if len(parts) == 1:
+            # 单个分片，直接复制
             shutil.copy2(split_dir / parts[0], target_path)
         else:
+            # 多个分片，按顺序合并
             with open(target_path, 'wb') as out_f:
                 for part in parts:
                     part_path = split_dir / part
@@ -115,6 +120,7 @@ def merge_model(split_dir, output_dir):
                     with open(part_path, 'rb') as in_f:
                         shutil.copyfileobj(in_f, out_f)
 
+    # 复制其他非分片文件（如 .json、.md 等）
     for file_path in split_dir.rglob("*"):
         if file_path.is_file():
             if file_path.name == "model_index.json":
