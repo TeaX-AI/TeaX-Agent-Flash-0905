@@ -1,4 +1,4 @@
-name: Stage 1 - MSAgent
+name: Stage 5 - Merge to Final Model (with sharding)
 
 on:
   workflow_dispatch:
@@ -7,9 +7,9 @@ permissions:
   contents: write
 
 jobs:
-  train:
+  merge:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,12 +25,12 @@ jobs:
       - name: Merge base model from parts
         run: python split_model.py --merge base_model_parts --output .cache/model
 
-      - name: Run training
-        run: python train.py --stage 1 --base_model .cache/model --output_model checkpoints/TeaX-Agent-Flash-MSAgent
+      - name: Merge LoRA to full model and shard
+        run: python train.py --stage 5 --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder --output_model checkpoints/TeaX-Agent-Flash
 
-      - name: Commit and push checkpoints
+      - name: Upload sharded final model
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add checkpoints/
-          git commit -m "Stage 1 checkpoint" && git push || echo "No changes"
+          git add checkpoints/TeaX-Agent-Flash/
+          git commit -m "Stage 5: Final sharded model" && git push || echo "No changes"

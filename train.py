@@ -13,7 +13,7 @@ from transformers import (
     DataCollatorForSeq2Seq
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ["WANDB_DISABLED"] = "true"
@@ -84,33 +84,21 @@ STAGE_CONFIG = {
     1: {
         "name": "MSAgent",
         "output_model": "checkpoints/TeaX-Agent-Flash-MSAgent",
-        "dataset_paths": [".cache/msagent/train.jsonl"],
-        "dataset_format": "json",
-        "samples": 598185,
         "base_model": ".cache/model",
     },
     2: {
         "name": "ShareGPT",
         "output_model": "checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT",
-        "dataset_paths": [".cache/sharegpt/sharegpt_jsonl/*.jsonl"],
-        "dataset_format": "json",
-        "samples": 230000,
         "base_model": "previous_model",
     },
     3: {
         "name": "DeepSeek-Hermes",
         "output_model": "checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes",
-        "dataset_paths": [".cache/deepseek-hermes/train.parquet"],
-        "dataset_format": "parquet",
-        "samples": 16431,
         "base_model": "previous_model",
     },
     4: {
         "name": "NextCoder",
         "output_model": "checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes-NextCoder",
-        "dataset_paths": [".cache/nextcoder/data.parquet"],
-        "dataset_format": "parquet",
-        "samples": 100000,
         "base_model": "previous_model",
     },
     5: {
@@ -124,13 +112,12 @@ STAGE_CONFIG = {
 config = STAGE_CONFIG[args.stage]
 base_model_path = args.base_model if args.base_model else config.get("base_model", ".cache/model")
 output_model_path = args.output_model if args.output_model else config["output_model"]
-max_steps = args.max_steps if args.max_steps else (config.get("samples", 0) // 4) if config.get("samples") else 10000
 
 print(f"阶段 {args.stage}: {config['name']}")
 print(f"基础模型: {base_model_path}")
 print(f"输出模型: {output_model_path}")
-print(f"最大步数: {max_steps}")
 
+# ========== Stage 5 合并模式 ==========
 if args.stage == 5:
     print("合并模式：将 LoRA 适配器合并到基础模型，并分片保存")
     if base_model_path == "previous_model":
@@ -159,60 +146,41 @@ if args.stage == 5:
     print("合并完成，分片保存成功！")
     sys.exit(0)
 
-def fmt_msagent(sample, tokenizer):
-    convs = sample.get("conversations", [])
-    if not convs: return None
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for t in convs:
-        role = t.get("from", "")
-        content = t.get("value", "")
-        if role == "system": continue
-        if role == "user": messages.append({"role": "user", "content": content})
-        elif role == "assistant": messages.append({"role": "assistant", "content": content})
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
-
-def fmt_sharegpt(sample, tokenizer):
-    convs = sample.get("conversations", [])
-    if not convs: return None
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for t in convs:
-        role = t.get("from", "")
-        content = t.get("value", "")
-        if role == "human": messages.append({"role": "user", "content": content})
-        elif role == "gpt": messages.append({"role": "assistant", "content": content})
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
-
-def fmt_deepseek_hermes(sample, tokenizer):
-    convs = sample.get("conversations", []) or sample.get("messages", [])
-    if not convs: return None
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for t in convs:
-        role = t.get("role", "")
-        content = t.get("content", "")
-        if role == "system": continue
-        if role in ("user", "assistant"): messages.append({"role": role, "content": content})
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) if len(messages)>1 else None
-
-def fmt_nextcoder(sample, tokenizer):
-    input_msgs = sample.get("input", [])
-    response = sample.get("response", "")
-    if not input_msgs or not response: return None
-    user_content = next((m.get("content") for m in input_msgs if m.get("role") == "user"), None)
-    if not user_content: return None
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-        {"role": "assistant", "content": response}
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-
+# ========== Stage 1-4 训练模式 ==========
+# 确定数据集名称
 STAGE_DATASET = {
     1: "msagent",
     2: "sharegpt",
     3: "deepseek-hermes",
     4: "nextcoder",
 }
+dataset_name = STAGE_DATASET[args.stage]
+meta_file = f"data/{dataset_name}.meta"
+if not Path(meta_file).exists():
+    print(f"错误: meta 文件 {meta_file} 不存在，请先运行 trans.py")
+    sys.exit(-1)
 
+with open(meta_file, "r") as f:
+    meta = json.load(f)
+TOTAL_SAMPLES = meta["total_samples"]
+
+# 合并分片为单个 .jsonl 文件（如果尚未合并）
+merged_file = f"data/{dataset_name}.jsonl"
+if not Path(merged_file).exists():
+    print(f"合并 {dataset_name} 的分片...")
+    chunk_files = sorted(glob.glob(f"data/{dataset_name}_*.jsonl"))
+    if not chunk_files:
+        print(f"错误: 找不到 {dataset_name} 的任何分片")
+        sys.exit(-1)
+    with open(merged_file, "w", encoding="utf-8") as out_f:
+        for cf in chunk_files:
+            with open(cf, "r", encoding="utf-8") as in_f:
+                out_f.write(in_f.read())
+    print(f"合并完成: {merged_file}")
+
+print(f"加载数据集: {merged_file}")
+
+# ========== 加载模型（可能来自上一阶段） ==========
 if base_model_path == "previous_model":
     prev_stage = args.stage - 1
     prev_output = STAGE_CONFIG[prev_stage]["output_model"]
@@ -252,44 +220,13 @@ else:
 
 model.print_trainable_parameters()
 
-def get_fmt_fn(stage):
-    if stage == 1: return fmt_msagent
-    elif stage == 2: return fmt_sharegpt
-    elif stage == 3: return fmt_deepseek_hermes
-    elif stage == 4: return fmt_nextcoder
-    else: raise ValueError("无效 stage")
-
-fmt_fn = get_fmt_fn(args.stage)
-
-dataset_name = STAGE_DATASET[args.stage]
-meta_file = f"data/{dataset_name}.meta"
-if not Path(meta_file).exists():
-    print(f"错误: meta 文件 {meta_file} 不存在，请先运行 trans.py")
-    sys.exit(-1)
-
-with open(meta_file, "r") as f:
-    meta = json.load(f)
-TOTAL_SAMPLES = meta["total_samples"]
-
-merged_file = f"data/{dataset_name}.jsonl"
-if not Path(merged_file).exists():
-    print(f"合并 {dataset_name} 的分片...")
-    chunk_files = sorted(glob.glob(f"data/{dataset_name}_*.jsonl"))
-    if not chunk_files:
-        print(f"错误: 找不到 {dataset_name} 的任何分片")
-        sys.exit(-1)
-    with open(merged_file, "w", encoding="utf-8") as out_f:
-        for cf in chunk_files:
-            with open(cf, "r", encoding="utf-8") as in_f:
-                out_f.write(in_f.read())
-    print(f"合并完成: {merged_file}")
-
-print(f"加载数据集: {merged_file}")
+# ========== 加载数据集（流式） ==========
 dataset = load_dataset("json", data_files=merged_file, split="train", streaming=True)
 
 def tokenize_fn(ex):
     text = ex.get("text", "")
-    if not text: return None
+    if not text:
+        return None
     enc = tokenizer(text, truncation=True, max_length=2048, padding=False)
     return {
         "input_ids": enc["input_ids"],
@@ -315,6 +252,16 @@ def custom_collator(batch):
         "labels": torch.tensor(padded_labels, dtype=torch.long),
         "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
     }
+
+# ========== 训练参数 ==========
+EFFECTIVE_BATCH = 1 * 4  # per_device * grad_accum
+if args.max_steps:
+    max_steps = args.max_steps
+else:
+    max_steps = TOTAL_SAMPLES // EFFECTIVE_BATCH
+print(f"总样本数: {TOTAL_SAMPLES}")
+print(f"有效批次大小: {EFFECTIVE_BATCH}")
+print(f"max_steps = {max_steps}")
 
 training_args = TrainingArguments(
     output_dir="./tmp_train",
