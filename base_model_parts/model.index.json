@@ -1,9 +1,0 @@
-{
-  "original_file": "model.safetensors",
-  "original_size": 3087467144,
-  "chunk_size": 1932735283,
-  "parts": [
-    "model.part001.safetensors",
-    "model.part002.safetensors"
-  ]
-}

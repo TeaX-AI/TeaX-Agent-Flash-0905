@@ -22,8 +22,8 @@ jobs:
       - name: Install dependencies
         run: pip install torch transformers peft accelerate datasets huggingface_hub
 
-      - name: Merge base model from parts
-        run: python split_model.py --merge base_model_parts --output .cache/model
+      - name: Download base model
+        run: python download_model.py
 
       - name: Run training
         run: python train.py --stage 3 --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT --output_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes
