@@ -46,7 +46,6 @@ jobs:
             --stage 3 \
             --base_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT \
             --output_model checkpoints/TeaX-Agent-Flash-MSAgent-ShareGPT-DeepSeekHarmes \
-            --save_steps 25 \
             ${{ steps.find_checkpoint.outputs.resume_arg }}
 
       - name: Push checkpoints to branch

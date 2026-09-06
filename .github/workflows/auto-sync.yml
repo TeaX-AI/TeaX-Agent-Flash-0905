@@ -11,6 +11,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[no-sync]') == false
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
@@ -21,5 +22,5 @@ jobs:
       - name: Push main to main-for-actions (force)
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions@users.noreply.github.com"
           git push origin main:main-for-actions --force

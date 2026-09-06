@@ -84,7 +84,7 @@ parser.add_argument('--base_model', type=str, default=None)
 parser.add_argument('--output_model', type=str, default=None)
 parser.add_argument('--max_steps', type=int, default=None)
 parser.add_argument('--resume', type=str, default=None)
-parser.add_argument('--save_steps', type=int, default=1, help='每多少步保存一次检查点')
+parser.add_argument('--save_steps', type=int, default=10, help='每多少步保存一次检查点')
 args = parser.parse_args()
 
 STAGE_CONFIG = {
@@ -255,7 +255,6 @@ def custom_collator(batch):
         "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
     }
 
-# ==================== 改进的 push 函数（带详细错误） ====================
 def push_checkpoints(step):
     start_time = time.time()
     branch = os.environ.get('GITHUB_REF_NAME')
@@ -274,35 +273,14 @@ def push_checkpoints(step):
         status = subprocess.check_output(['git', 'status', '--porcelain', 'checkpoints/']).decode()
         if not status:
             return True, None, time.time() - start_time, branch
-
-        # 设置 Git 用户信息（双重保险）
-        subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True, capture_output=True)
-        subprocess.run(['git', 'config', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=True, capture_output=True)
-
-        # add
-        result = subprocess.run(['git', 'add', 'checkpoints/'], capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, f"git add failed (code {result.returncode}): stderr: {result.stderr}", time.time() - start_time, branch
-
-        # commit
-        result = subprocess.run(['git', 'commit', '-m', f'Checkpoint update at step {step}'], capture_output=True, text=True)
-        if result.returncode != 0:
-            # 如果是因为没有变更（理论上不应发生，但以防万一）
-            if "nothing to commit" in result.stderr:
-                return True, None, time.time() - start_time, branch
-            return False, f"git commit failed (code {result.returncode}): stdout: {result.stdout}, stderr: {result.stderr}", time.time() - start_time, branch
-
-        # push
-        result = subprocess.run(['git', 'push', 'origin', f'HEAD:{branch}'], capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, f"git push failed (code {result.returncode}): stdout: {result.stdout}, stderr: {result.stderr}", time.time() - start_time, branch
-
-    except Exception as e:
-        return False, f"Unexpected error: {str(e)}", time.time() - start_time, branch
+        subprocess.check_call(['git', 'add', 'checkpoints/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(['git', 'commit', '-m', f'Checkpoint update at step {step}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(['git', 'push', 'origin', f'HEAD:{branch}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        return False, str(e), time.time() - start_time, branch
 
     return True, None, time.time() - start_time, branch
 
-# ==================== 回调 ====================
 class PushCheckpointCallback(TrainerCallback):
     def on_save(self, args, state, control, model=None, tokenizer=None, **kwargs):
         if state.global_step == 0:
